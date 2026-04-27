@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # Seestar Debayer & Stack
-# Version: 0.1.0
 # Copyright (c) 2026 Aquarius58
 # SPDX-License-Identifier: MIT
 
@@ -49,6 +48,7 @@ from PyQt6.QtWidgets import (
 
 
 # User settings
+SCRIPT_VERSION = "0.1.0"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
 
@@ -82,7 +82,7 @@ CLEANUP_RETRY_DELAY_SECONDS = 0.5
 VERBOSE_COMMAND_LOG = False
 VERBOSE_FRAME_LOG = False
 
-WINDOW_TITLE = "Seestar Stack"
+WINDOW_TITLE = f"Seestar Debayer & Stack {SCRIPT_VERSION}"
 WINDOW_WIDTH = 760
 WINDOW_HEIGHT = 420
 
