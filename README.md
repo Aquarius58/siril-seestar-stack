@@ -70,3 +70,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Note**: This script is designed to run only within Siril's Python environment and cannot be executed independently.
+
