@@ -48,7 +48,7 @@ from PyQt6.QtWidgets import (
 
 
 # User settings
-SCRIPT_VERSION = "0.1.0"
+SCRIPT_VERSION = "0.2.1"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
 
@@ -74,17 +74,54 @@ TEMP_BASENAME = "tmp"
 DEFAULT_SUBFRAME_EXPOSURE = 10.0
 DEBAYER_CFA_TO_LUMA = True
 KEEP_LUMA_IMAGES = True
-LUMA_IMAGE_SUFFIX = "_d_l"
 OVERWRITE_RESULTS = True
 KEEP_TEMP_ON_ERROR = True
 CLEANUP_RETRIES = 6
 CLEANUP_RETRY_DELAY_SECONDS = 0.5
 VERBOSE_COMMAND_LOG = False
 VERBOSE_FRAME_LOG = False
+PROGRESS_LOG_INTERVAL = 50
 
 WINDOW_TITLE = f"Seestar Debayer & Stack {SCRIPT_VERSION}"
 WINDOW_WIDTH = 760
 WINDOW_HEIGHT = 420
+
+CFA_CHANNELS = {
+    "L": {
+        "suffix": "_l",
+        "filter": "L",
+        "chanmode": "LUMA601",
+        "label": "L",
+        "comment": "Derived luminance channel",
+        "mode_comment": "RGB luma weights: 0.299 R, 0.587 G, 0.114 B",
+    },
+    "R": {
+        "suffix": "_r",
+        "filter": "R",
+        "chanmode": "CFA_R",
+        "label": "R",
+        "comment": "Derived red channel",
+        "mode_comment": "Debayered CFA red channel",
+    },
+    "G": {
+        "suffix": "_g",
+        "filter": "G",
+        "chanmode": "CFA_G",
+        "label": "G",
+        "comment": "Derived green channel",
+        "mode_comment": "Debayered CFA green channel",
+    },
+    "B": {
+        "suffix": "_b",
+        "filter": "B",
+        "chanmode": "CFA_B",
+        "label": "B",
+        "comment": "Derived blue channel",
+        "mode_comment": "Debayered CFA blue channel",
+    },
+}
+DEFAULT_CFA_CHANNELS = ("L",)
+BAYER_HEADER_KEYS = ("BAYERPAT", "XBAYROFF", "YBAYROFF", "ROWORDER")
 
 @dataclass(frozen=True)
 class StackPlan:
@@ -161,7 +198,7 @@ def read_frame(path: Path, log_callback) -> FitsFrame:
 def image_has_bayer_header(path: Path) -> bool:
     with fits.open(path) as hdul:
         header = hdul[0].header
-        return any(key in header for key in ("BAYERPAT", "XBAYROFF", "YBAYROFF", "ROWORDER"))
+        return any(key in header for key in BAYER_HEADER_KEYS)
 
 
 def frames_need_debayer(frames: list[FitsFrame]) -> bool:
@@ -305,30 +342,36 @@ def retry_path(operation, raise_on_failure: bool = True) -> Exception | None:
     return last_exc
 
 
-def temp_dir_has_contents(path: Path) -> bool:
-    return path.exists() and any(path.iterdir())
-
-
 def siril_path(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-def build_output_header(source_path: Path) -> fits.Header:
+def build_output_header(source_path: Path, channel_key: str) -> fits.Header:
+    channel = CFA_CHANNELS[channel_key]
     header = fits.getheader(source_path).copy()
     source_filter = header.get("FILTER")
-    for key in ("BAYERPAT", "XBAYROFF", "YBAYROFF", "ROWORDER"):
+    for key in BAYER_HEADER_KEYS:
         if key in header:
             del header[key]
     if source_filter:
         header["SRCFILT"] = (str(source_filter), "Original source filter")
-    header["FILTER"] = ("L", "Derived luminance channel")
-    header["CHANMODE"] = ("LUMA601", "RGB luma weights: 0.299 R, 0.587 G, 0.114 B")
+    header["FILTER"] = (channel["filter"], channel["comment"])
+    header["CHANMODE"] = (channel["chanmode"], channel["mode_comment"])
     header["DERIVED"] = (True, "Derived from debayered CFA data")
     return header
 
 
-def plan_result_dir(source_dir: Path, plan: StackPlan) -> Path:
-    return source_dir.parent / f"{source_dir.name}-stack{plan.suffix}"
+def cfa_channel_suffix(channel_key: str) -> str:
+    return str(CFA_CHANNELS[channel_key]["suffix"])
+
+
+def cfa_channel_label(channel_key: str) -> str:
+    return str(CFA_CHANNELS[channel_key]["label"])
+
+
+def plan_result_dir(source_dir: Path, plan: StackPlan, channel_key: str | None = None) -> Path:
+    channel_suffix = cfa_channel_suffix(channel_key) if channel_key is not None else ""
+    return source_dir.parent / f"{source_dir.name}{channel_suffix}-stack{plan.suffix}"
 
 
 def plan_temp_dir(source_dir: Path, plan: StackPlan) -> Path:
@@ -339,12 +382,12 @@ def debayer_temp_dir(source_dir: Path) -> Path:
     return source_dir.parent / f"{source_dir.name}-tmpdebayer"
 
 
-def luma_temp_dir(source_dir: Path) -> Path:
-    return source_dir.parent / f"{source_dir.name}-tmpluma"
+def channel_temp_dir(source_dir: Path, channel_key: str) -> Path:
+    return source_dir.parent / f"{source_dir.name}-tmp{cfa_channel_suffix(channel_key)}"
 
 
-def luma_result_dir(source_dir: Path) -> Path:
-    return source_dir.parent / f"{source_dir.name}{LUMA_IMAGE_SUFFIX}"
+def channel_result_dir(source_dir: Path, channel_key: str) -> Path:
+    return source_dir.parent / f"{source_dir.name}{cfa_channel_suffix(channel_key)}"
 
 
 def assert_can_create_directory(path: Path) -> None:
@@ -415,15 +458,25 @@ def collect_registered_files(tmp_dir: Path) -> list[Path]:
     return sorted(path for path in tmp_dir.glob(f"r_{TEMP_BASENAME}_*.fit") if not is_hidden_fits(path))
 
 
+def should_log_progress(index: int, total: int) -> bool:
+    return index == 1 or index == total or index % PROGRESS_LOG_INTERVAL == 0
+
+
 class StackWorker(QThread):
     log = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, source_dir: str, selected_plans: tuple[StackPlan, ...]):
+    def __init__(
+        self,
+        source_dir: str,
+        selected_plans: tuple[StackPlan, ...],
+        selected_channels: tuple[str, ...],
+    ):
         super().__init__()
         self.source_dir = Path(source_dir).expanduser()
         self.selected_plans = selected_plans
-        self.debayer_dirs: tuple[Path, Path] | None = None
+        self.selected_channels = selected_channels
+        self.debayer_dirs: tuple[Path, ...] | None = None
         self.plan_temp_dirs = tuple(plan_temp_dir(self.source_dir, plan) for plan in selected_plans)
 
     def emit_log(self, message: str) -> None:
@@ -445,7 +498,7 @@ class StackWorker(QThread):
             if self.selected_plans:
                 message = f"Stack fertig. Letzte Ergebnisse in {result_dir}"
             else:
-                message = f"Luma-Export fertig. Ergebnisse in {result_dir}"
+                message = f"Kanal-Export fertig. Ergebnisse in {result_dir}"
             self.finished.emit(True, message)
         except Exception as exc:
             self.finished.emit(False, str(exc))
@@ -463,6 +516,8 @@ class StackWorker(QThread):
             )
 
         needs_debayer = frames_need_debayer(source_frames)
+        if needs_debayer and not self.selected_channels:
+            raise ValueError("Mindestens ein CFA-Output muss ausgewaehlt sein.")
         self.preflight_output_dirs(needs_debayer)
 
         siril = s.SirilInterface()
@@ -473,10 +528,11 @@ class StackWorker(QThread):
         final_result_dir: Path | None = None
         completed = False
         try:
-            frames = self.prepare_processing_frames(siril, source_frames, needs_debayer)
-            self.keep_luma_images(frames)
-            for plan in self.selected_plans:
-                final_result_dir = self.run_stack_plan(siril, plan, frames)
+            frames_by_channel = self.prepare_processing_frames(siril, source_frames, needs_debayer)
+            self.keep_channel_images(frames_by_channel)
+            for channel_key, frames in frames_by_channel.items():
+                for plan in self.selected_plans:
+                    final_result_dir = self.run_stack_plan(siril, plan, frames, channel_key)
             completed = True
         finally:
             try:
@@ -493,7 +549,7 @@ class StackWorker(QThread):
 
         if final_result_dir is None:
             if needs_debayer and KEEP_LUMA_IMAGES:
-                return luma_result_dir(self.source_dir)
+                return channel_result_dir(self.source_dir, self.selected_channels[-1])
             raise RuntimeError(
                 "Keine Stack-Ergebnisse erzeugt. Bitte mindestens einen Stack-Plan auswaehlen."
             )
@@ -504,71 +560,119 @@ class StackWorker(QThread):
         siril: s.SirilInterface,
         source_frames: list[FitsFrame],
         needs_debayer: bool,
-    ) -> list[FitsFrame]:
+    ) -> dict[str | None, list[FitsFrame]]:
         if not needs_debayer:
             if VERBOSE_FRAME_LOG:
                 self.emit_log("[INFO] Keine CFA/Bayer-Header erkannt; stacke Eingabebilder direkt.")
-            return source_frames
+            return {None: source_frames}
+
+        if not self.selected_channels:
+            raise ValueError("Mindestens ein CFA-Output muss ausgewaehlt sein.")
 
         if VERBOSE_FRAME_LOG:
-            self.emit_log("[INFO] CFA/Bayer-Header erkannt; erzeuge RGB-Luma601-L-Bilder vor dem Stack.")
+            channel_labels = ", ".join(cfa_channel_label(channel_key) for channel_key in self.selected_channels)
+            self.emit_log(f"[INFO] CFA/Bayer-Header erkannt; erzeuge Kanaele: {channel_labels}.")
         debayer_dir = debayer_temp_dir(self.source_dir)
-        luma_dir = luma_temp_dir(self.source_dir)
-        self.debayer_dirs = (debayer_dir, luma_dir)
+        channel_dirs = {
+            channel_key: channel_temp_dir(self.source_dir, channel_key)
+            for channel_key in self.selected_channels
+        }
+        self.debayer_dirs = (debayer_dir, *channel_dirs.values())
 
         if debayer_dir.exists():
             empty_dir(debayer_dir)
         else:
             debayer_dir.mkdir(parents=True)
-        if luma_dir.exists():
-            empty_dir(luma_dir)
-        else:
-            luma_dir.mkdir(parents=True)
+        for channel_dir in channel_dirs.values():
+            if channel_dir.exists():
+                empty_dir(channel_dir)
+            else:
+                channel_dir.mkdir(parents=True)
 
         try:
-            for frame in source_frames:
+            frame_count = len(source_frames)
+            channel_labels = ", ".join(cfa_channel_label(channel_key) for channel_key in self.selected_channels)
+            self.emit_log(f"[INFO] Kopiere CFA-Quellbilder: {frame_count} Dateien.")
+            for index, frame in enumerate(source_frames, start=1):
                 shutil.copy2(frame.path, debayer_dir / frame.path.name)
+                if should_log_progress(index, frame_count):
+                    self.emit_log(f"[INFO] CFA-Quellbilder kopiert: {index}/{frame_count}.")
 
             self.run_cmd(siril, f"requires {SIRIL_REQUIRES}")
             self.run_cmd(siril, OUTPUT_BITS_COMMAND)
             self.run_cmd(siril, f'cd "{siril_path(debayer_dir)}"')
+            self.emit_log(f"[INFO] Starte Siril-Debayer fuer {frame_count} CFA-Bilder.")
             self.run_cmd(siril, "convert deb -debayer")
+            self.emit_log(f"[OK] Siril-Debayer fertig: {frame_count} Bilder.")
 
             for index, frame in enumerate(source_frames, start=1):
                 suffix = f"{index:05d}"
                 self.run_cmd(siril, f"load deb_{suffix}.fit")
                 self.run_cmd(siril, f"split rgb_{suffix}_r rgb_{suffix}_g rgb_{suffix}_b")
-                output_path = self.write_rgb_luma_output(frame.path, debayer_dir, luma_dir, suffix)
-                if VERBOSE_FRAME_LOG:
-                    self.emit_log(f"[OK] Luma erzeugt: {output_path.name}")
+                rgb_data = self.read_rgb_split(debayer_dir, suffix)
+                for channel_key, channel_dir in channel_dirs.items():
+                    output_path = self.write_rgb_channel_output(
+                        frame.path,
+                        channel_dir,
+                        channel_key,
+                        rgb_data,
+                    )
+                    if VERBOSE_FRAME_LOG:
+                        self.emit_log(f"[OK] {cfa_channel_label(channel_key)} erzeugt: {output_path.name}")
+                if should_log_progress(index, frame_count):
+                    self.emit_log(
+                        f"[INFO] RGB-Split und Kanalbilder {channel_labels}: "
+                        f"{index}/{frame_count}."
+                    )
 
-            luma_frames = collect_valid_fits(luma_dir, self.emit_log)
-            if not luma_frames:
-                raise FileNotFoundError(f"Keine Luma-FITS erzeugt in {luma_dir}")
-            self.emit_log(f"[OK] Luma-Bilder erzeugt: {len(luma_frames)} Dateien.")
-            return luma_frames
+            frames_by_channel: dict[str | None, list[FitsFrame]] = {}
+            for channel_key, channel_dir in channel_dirs.items():
+                channel_frames = collect_valid_fits(channel_dir, self.emit_log)
+                if not channel_frames:
+                    raise FileNotFoundError(
+                        f"Keine {cfa_channel_label(channel_key)}-FITS erzeugt in {channel_dir}"
+                    )
+                frames_by_channel[channel_key] = channel_frames
+                self.emit_log(
+                    f"[OK] {cfa_channel_label(channel_key)}-Bilder erzeugt: "
+                    f"{len(channel_frames)} Dateien."
+                )
+            return frames_by_channel
         finally:
             if not KEEP_TEMP_ON_ERROR:
                 remove_dir(debayer_dir)
 
-    def write_rgb_luma_output(
-        self,
-        source_path: Path,
-        workdir: Path,
-        output_dir: Path,
-        suffix: str,
-    ) -> Path:
+    def read_rgb_split(self, workdir: Path, suffix: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rgb_r = fits.getdata(workdir / f"rgb_{suffix}_r.fit").astype(np.float64)
         rgb_g = fits.getdata(workdir / f"rgb_{suffix}_g.fit").astype(np.float64)
         rgb_b = fits.getdata(workdir / f"rgb_{suffix}_b.fit").astype(np.float64)
-        rgb_luma = np.clip(
-            np.rint(0.299 * rgb_r + 0.587 * rgb_g + 0.114 * rgb_b),
-            0,
-            65535,
-        ).astype(np.uint16)
+        return rgb_r, rgb_g, rgb_b
 
-        output_path = output_dir / f"{source_path.stem}{LUMA_IMAGE_SUFFIX}.fit"
-        fits.writeto(output_path, rgb_luma, header=build_output_header(source_path), overwrite=True)
+    def write_rgb_channel_output(
+        self,
+        source_path: Path,
+        output_dir: Path,
+        channel_key: str,
+        rgb_data: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ) -> Path:
+        rgb_r, rgb_g, rgb_b = rgb_data
+        if channel_key == "L":
+            data = np.clip(
+                np.rint(0.299 * rgb_r + 0.587 * rgb_g + 0.114 * rgb_b),
+                0,
+                65535,
+            ).astype(np.uint16)
+        elif channel_key == "R":
+            data = np.clip(np.rint(rgb_r), 0, 65535).astype(np.uint16)
+        elif channel_key == "G":
+            data = np.clip(np.rint(rgb_g), 0, 65535).astype(np.uint16)
+        elif channel_key == "B":
+            data = np.clip(np.rint(rgb_b), 0, 65535).astype(np.uint16)
+        else:
+            raise ValueError(f"Unbekannter CFA-Kanal: {channel_key}")
+
+        output_path = output_dir / f"{source_path.stem}{cfa_channel_suffix(channel_key)}.fit"
+        fits.writeto(output_path, data, header=build_output_header(source_path, channel_key), overwrite=True)
         return output_path
 
     def preflight_output_dirs(self, needs_debayer: bool) -> None:
@@ -577,26 +681,30 @@ class StackWorker(QThread):
             self.emit_log(f"[INFO] Ergebnis-/Temp-Ordner werden neben diesem Ordner angelegt.")
 
         for plan in self.selected_plans:
-            result_dir = plan_result_dir(self.source_dir, plan)
-            if result_dir.exists() and not OVERWRITE_RESULTS:
-                raise FileExistsError(
-                    f"Ergebnisordner existiert bereits: {result_dir}. "
-                    "Loeschen oder OVERWRITE_RESULTS = True setzen."
-                )
-            assert_can_create_directory(result_dir)
-            assert_can_create_directory(plan_temp_dir(self.source_dir, plan))
-
-        if needs_debayer:
-            assert_can_create_directory(debayer_temp_dir(self.source_dir))
-            assert_can_create_directory(luma_temp_dir(self.source_dir))
-            if KEEP_LUMA_IMAGES:
-                result_dir = luma_result_dir(self.source_dir)
+            result_channels: tuple[str | None, ...] = self.selected_channels if needs_debayer else (None,)
+            for channel_key in result_channels:
+                result_dir = plan_result_dir(self.source_dir, plan, channel_key)
                 if result_dir.exists() and not OVERWRITE_RESULTS:
                     raise FileExistsError(
                         f"Ergebnisordner existiert bereits: {result_dir}. "
                         "Loeschen oder OVERWRITE_RESULTS = True setzen."
                     )
                 assert_can_create_directory(result_dir)
+            assert_can_create_directory(plan_temp_dir(self.source_dir, plan))
+
+        if needs_debayer:
+            assert_can_create_directory(debayer_temp_dir(self.source_dir))
+            for channel_key in self.selected_channels:
+                assert_can_create_directory(channel_temp_dir(self.source_dir, channel_key))
+            if KEEP_LUMA_IMAGES:
+                for channel_key in self.selected_channels:
+                    result_dir = channel_result_dir(self.source_dir, channel_key)
+                    if result_dir.exists() and not OVERWRITE_RESULTS:
+                        raise FileExistsError(
+                            f"Ergebnisordner existiert bereits: {result_dir}. "
+                            "Loeschen oder OVERWRITE_RESULTS = True setzen."
+                        )
+                    assert_can_create_directory(result_dir)
 
     def prepare_result_dir(self, result_dir: Path) -> None:
         if result_dir.exists():
@@ -606,46 +714,71 @@ class StackWorker(QThread):
         else:
             result_dir.mkdir(parents=True)
 
-    def keep_luma_images(self, frames: list[FitsFrame]) -> None:
+    def keep_channel_images(self, frames_by_channel: dict[str | None, list[FitsFrame]]) -> None:
         if not KEEP_LUMA_IMAGES or self.debayer_dirs is None:
             return
 
-        luma_dir = self.debayer_dirs[1]
-        luma_frames = [frame for frame in frames if frame.path.parent == luma_dir]
-        if not luma_frames:
-            return
+        for channel_key, frames in frames_by_channel.items():
+            if channel_key is None:
+                continue
 
-        result_dir = luma_result_dir(self.source_dir)
-        self.prepare_result_dir(result_dir)
-        for frame in luma_frames:
-            shutil.copy2(frame.path, result_dir / frame.path.name)
-        self.emit_log(f"[OK] Luma-Einzelbilder erhalten: {len(luma_frames)} Dateien in {result_dir.name}.")
+            channel_dir = channel_temp_dir(self.source_dir, channel_key)
+            channel_frames = [frame for frame in frames if frame.path.parent == channel_dir]
+            if not channel_frames:
+                continue
 
-    def run_stack_plan(self, siril: s.SirilInterface, plan: StackPlan, frames: list[FitsFrame]) -> Path:
+            result_dir = channel_result_dir(self.source_dir, channel_key)
+            self.prepare_result_dir(result_dir)
+            frame_count = len(channel_frames)
+            channel_label = cfa_channel_label(channel_key)
+            self.emit_log(f"[INFO] Behalte {channel_label}-Einzelbilder: {frame_count} Dateien.")
+            for index, frame in enumerate(channel_frames, start=1):
+                shutil.copy2(frame.path, result_dir / frame.path.name)
+                if should_log_progress(index, frame_count):
+                    self.emit_log(
+                        f"[INFO] {channel_label}-Einzelbilder kopiert: "
+                        f"{index}/{frame_count}."
+                    )
+            self.emit_log(
+                f"[OK] {channel_label}-Einzelbilder erhalten: "
+                f"{frame_count} Dateien in {result_dir.name}."
+            )
+
+    def run_stack_plan(
+        self,
+        siril: s.SirilInterface,
+        plan: StackPlan,
+        frames: list[FitsFrame],
+        channel_key: str | None,
+    ) -> Path:
         tmp_dir = plan_temp_dir(self.source_dir, plan)
-        result_dir = plan_result_dir(self.source_dir, plan)
+        result_dir = plan_result_dir(self.source_dir, plan, channel_key)
         completed = False
 
         self.prepare_result_dir(result_dir)
+        self.move_siril_to_safe_directory(siril)
         if tmp_dir.exists():
-            retry_empty_dir(tmp_dir)
+            retry_path(lambda: remove_dir(tmp_dir))
         else:
             tmp_dir.mkdir(parents=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            if VERBOSE_COMMAND_LOG:
-                self.emit_log(f"[INFO] Starte Stack-Plan {plan.name}")
+            channel_label = cfa_channel_label(channel_key) if channel_key is not None else "Input"
+            self.emit_log(f"[INFO] Starte Stack-Plan {plan.name} fuer {channel_label}.")
             self.run_cmd(siril, f"requires {SIRIL_REQUIRES}")
             self.run_cmd(siril, OUTPUT_BITS_COMMAND)
 
             blocks = split_into_blocks(frames, plan)
-            for index, block in blocks:
+            total_blocks = len(blocks)
+            for block_number, (index, block) in enumerate(blocks, start=1):
                 if not block:
                     continue
 
                 start_idx = index + 1
                 end_idx = index + len(block)
                 outname = f"stack_{plan.suffix}_{start_idx:05d}-{end_idx:05d}"
+                block_tmp_dir = tmp_dir / f"{outname}_work"
 
                 if len(block) < MIN_FRAMES_PER_STACK:
                     self.emit_log(
@@ -654,44 +787,80 @@ class StackWorker(QThread):
                     )
                     continue
 
+                self.emit_log(
+                    f"[INFO] Stack {channel_label} Plan {plan.name} "
+                    f"Block {block_number}/{total_blocks}: "
+                    f"Frames {start_idx:05d}-{end_idx:05d}."
+                )
                 midpoint, total_exposure = compute_midpoint(block)
-                if temp_dir_has_contents(tmp_dir):
-                    retry_empty_dir(tmp_dir)
+                if block_tmp_dir.exists():
+                    retry_path(lambda: remove_dir(block_tmp_dir))
+                block_tmp_dir.mkdir(parents=True)
                 for frame in block:
-                    shutil.copy2(frame.path, tmp_dir / frame.path.name)
+                    shutil.copy2(frame.path, block_tmp_dir / frame.path.name)
 
-                self.run_cmd(siril, f'cd "{siril_path(tmp_dir)}"')
+                self.run_cmd(siril, f'cd "{siril_path(block_tmp_dir)}"')
                 self.run_cmd(siril, f"link {TEMP_BASENAME} -out=.")
 
-                self.run_cmd(siril, build_register_command(self.emit_log))
-                if REGISTRATION_TWO_PASS:
-                    self.run_cmd(siril, build_seqapplyreg_command())
-
-                registered_files = collect_registered_files(tmp_dir)
-                if not registered_files:
-                    raise RuntimeError(
-                        f"Registrierung fehlgeschlagen fuer {outname}: "
-                        f"keine registrierten Dateien r_{TEMP_BASENAME}_*.fit in {tmp_dir} gefunden."
+                try:
+                    self.run_cmd(siril, build_register_command(self.emit_log))
+                    if REGISTRATION_TWO_PASS:
+                        self.run_cmd(siril, build_seqapplyreg_command())
+                except Exception as exc:
+                    self.emit_log(
+                        f"[WARN] Ueberspringe {outname}: Registrierung fehlgeschlagen ({exc})."
                     )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
+
+                registered_files = collect_registered_files(block_tmp_dir)
+                if not registered_files:
+                    self.emit_log(
+                        f"[WARN] Ueberspringe {outname}: Registrierung fehlgeschlagen, "
+                        f"keine registrierten Dateien r_{TEMP_BASENAME}_*.fit gefunden."
+                    )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
+                if len(registered_files) < MIN_FRAMES_PER_STACK:
+                    self.emit_log(
+                        f"[WARN] Ueberspringe {outname}: nur {len(registered_files)} von "
+                        f"{len(block)} Frames registriert, mindestens {MIN_FRAMES_PER_STACK} erforderlich."
+                    )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
                 if len(registered_files) < len(block):
-                    raise RuntimeError(
-                        f"Registrierung unvollstaendig fuer {outname}: "
-                        f"{len(registered_files)} von {len(block)} Frames registriert."
+                    self.emit_log(
+                        f"[WARN] {outname}: {len(registered_files)} von {len(block)} Frames registriert; "
+                        "stacke die registrierten Frames."
                     )
 
                 self.run_cmd(siril, build_stack_command(outname))
 
-                output_fit = tmp_dir / f"{outname}.fit"
+                output_fit = block_tmp_dir / f"{outname}.fit"
                 if not output_fit.exists():
-                    raise FileNotFoundError(f"Siril hat keine Stack-Datei erzeugt: {output_fit}")
+                    self.emit_log(
+                        f"[WARN] Ueberspringe {outname}: Siril hat keine Stack-Datei erzeugt."
+                    )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
 
-                write_midpoint_header(output_fit, midpoint, total_exposure, len(block))
+                try:
+                    write_midpoint_header(output_fit, midpoint, total_exposure, len(registered_files))
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Stack-Datei erzeugt, Header-Update fehlgeschlagen fuer {outname}: {exc}"
+                    ) from exc
                 shutil.move(str(output_fit), result_dir / output_fit.name)
                 self.emit_log(
                     f"[OK] Gruppe {plan.name} {start_idx:05d}-{end_idx:05d}: "
-                    f"{output_fit.name} gespeichert."
+                    f"{output_fit.name} gespeichert ({len(registered_files)}/{len(block)} Frames)."
                 )
                 self.move_siril_to_safe_directory(siril)
+                cleanup_remove_dir(block_tmp_dir, self.emit_log)
 
             completed = True
             return result_dir
@@ -771,10 +940,22 @@ class StackWindow(QWidget):
         plan_layout.addRow("Gruppe 3", self.build_plan_row(all_label, self.plan_all_check, self.plan_all_show_button))
         plan_group.setLayout(plan_layout)
 
+        cfa_group = QGroupBox("CFA Output")
+        cfa_layout = QHBoxLayout()
+        self.channel_checks: dict[str, QCheckBox] = {}
+        for channel_key, channel in CFA_CHANNELS.items():
+            check = QCheckBox(str(channel["label"]))
+            check.setChecked(channel_key in DEFAULT_CFA_CHANNELS)
+            self.channel_checks[channel_key] = check
+            cfa_layout.addWidget(check)
+        cfa_layout.addStretch(1)
+        cfa_group.setLayout(cfa_layout)
+
         tabs = QTabWidget()
         stack_tab = QWidget()
         stack_layout = QVBoxLayout(stack_tab)
         stack_layout.addWidget(plan_group)
+        stack_layout.addWidget(cfa_group)
         stack_layout.addStretch(1)
         tabs.addTab(stack_tab, "Stack")
         tabs.setDocumentMode(True)
@@ -840,6 +1021,13 @@ class StackWindow(QWidget):
             selected.append(available[2])
         return tuple(selected)
 
+    def build_selected_channels(self) -> tuple[str, ...]:
+        return tuple(
+            channel_key
+            for channel_key in CFA_CHANNELS
+            if self.channel_checks[channel_key].isChecked()
+        )
+
     def update_plan_spinboxes(self) -> None:
         mode = self.current_plan_mode()
         if mode == "time":
@@ -866,10 +1054,19 @@ class StackWindow(QWidget):
 
         try:
             plan = self.build_available_plans()[plan_index]
-            result_dir = plan_result_dir(source_dir, plan)
-            result_files = sorted(path for path in result_dir.glob("stack_*.fit") if not is_hidden_fits(path))
-            if not result_files:
-                result_files = sorted(path for path in result_dir.glob("*.fit") if not is_hidden_fits(path))
+            candidate_channels: tuple[str | None, ...] = (*self.build_selected_channels(), None)
+            checked_dirs: list[Path] = []
+            result_files: list[Path] = []
+            for channel_key in candidate_channels:
+                candidate_dir = plan_result_dir(source_dir, plan, channel_key)
+                checked_dirs.append(candidate_dir)
+                result_files = sorted(
+                    path for path in candidate_dir.glob("stack_*.fit") if not is_hidden_fits(path)
+                )
+                if not result_files:
+                    result_files = sorted(path for path in candidate_dir.glob("*.fit") if not is_hidden_fits(path))
+                if result_files:
+                    break
 
             if result_files:
                 first_image = result_files[0]
@@ -878,7 +1075,8 @@ class StackWindow(QWidget):
                 )
             else:
                 raise FileNotFoundError(
-                    f"Kein Stack-Ergebnis fuer Plan {plan.name} vorhanden: {result_dir}"
+                    f"Kein Stack-Ergebnis fuer Plan {plan.name} vorhanden: "
+                    f"{', '.join(path.name for path in checked_dirs)}"
                 )
 
             siril = s.SirilInterface()
@@ -903,7 +1101,7 @@ class StackWindow(QWidget):
 
         self.log_view.clear()
         self.stack_button.setEnabled(False)
-        self.worker = StackWorker(source_dir, self.build_selected_plans())
+        self.worker = StackWorker(source_dir, self.build_selected_plans(), self.build_selected_channels())
         self.worker.log.connect(self.append_log)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()
@@ -914,21 +1112,23 @@ class StackWindow(QWidget):
             "Ablauf:\n"
             "1. Ordner mit .fit/.fits-Lights waehlen.\n"
             "2. Stack-Plaene auswaehlen.\n"
-            "3. Optional alle Stack-Plaene abwaehlen, um nur Luma-Einzelbilder zu erzeugen.\n"
+            "3. CFA-Outputs auswaehlen: L, R, G und/oder B.\n"
             "4. Optional mit 'Show First' das erste vorhandene Stack-Ergebnis laden.\n"
             "5. Mit 'Start' debayern, registrieren und stacken.\n\n"
-            "Debayer/Luma:\n"
-            "- Wenn CFA/Bayer-Header erkannt werden, erzeugt die App zuerst L-Bilder.\n"
-            "- Methode: Siril debayer + RGB split + RGB-Luma601 = 0.299 R + 0.587 G + 0.114 B.\n"
-            "- Die L-Bilder erhalten FILTER='L'; Bayer-Header werden entfernt.\n"
-            f"- Wenn KEEP_LUMA_IMAGES = True ist, bleiben die L-Bilder als '*{LUMA_IMAGE_SUFFIX}.fit' in einem eigenen Ordner erhalten.\n"
+            "Debayer/CFA-Outputs:\n"
+            "- Wenn CFA/Bayer-Header erkannt werden, erzeugt die App zuerst die ausgewaehlten Kanalbilder.\n"
+            "- L: Siril debayer + RGB split + ITU-R BT.601 Luma aus 0.299 R + 0.587 G + 0.114 B.\n"
+            "- R/G/B: die voll aufgeloesten debayerten CFA-Farbkanaele.\n"
+            "- Die Kanalbilder erhalten FILTER='L', 'R', 'G' oder 'B'; CHANMODE dokumentiert LUMA601 oder CFA_R/G/B.\n"
+            "- Wenn KEEP_LUMA_IMAGES = True ist, bleiben die Kanalbilder in eigenen Ordnern erhalten.\n"
             "- Wenn keine CFA/Bayer-Header erkannt werden, werden die Eingabebilder direkt gestackt.\n\n"
             "Ordner:\n"
             "- Originalbilder werden nicht veraendert.\n"
-            "- Ergebnisordner werden neben dem Quellordner angelegt, z.B. '<quelle>-stack100sec'.\n"
-            f"- Luma-Einzelbilder werden neben dem Quellordner in '<quelle>{LUMA_IMAGE_SUFFIX}' abgelegt.\n"
+            "- Ergebnisordner fuer CFA-Daten werden kanalbezogen angelegt, z.B. '<quelle>_g-stack100sec'.\n"
+            "- Ergebnisordner fuer Nicht-CFA-Daten bleiben ohne Kanal-Suffix, z.B. '<quelle>-stack100sec'.\n"
+            "- Kanal-Einzelbilder werden neben dem Quellordner in '<quelle>_l', '<quelle>_r', '<quelle>_g' oder '<quelle>_b' abgelegt.\n"
             "- Temp-Ordner werden ebenfalls daneben angelegt, z.B. '<quelle>-tmp100sec'.\n"
-            "- Debayer-Zwischenordner werden ebenfalls temporaer daneben angelegt.\n"
+            "- Debayer-Zwischenordner werden temporaer daneben angelegt, z.B. '<quelle>-tmpdebayer' und '<quelle>-tmp_g'.\n"
             "- Temp-Ordner werden erst nach erfolgreichem Gesamtlauf und nach Siril-Disconnect geloescht.\n\n"
             "Sicherheit:\n"
             f"- OVERWRITE_RESULTS steht aktuell auf {OVERWRITE_RESULTS}.\n"
