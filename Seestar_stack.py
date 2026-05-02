@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Seestar Debayer & Stack
-# Copyright (c) 2026 Aquarius58
+# Copyright (c) 2026 Thomas Rudolph (@Aquarius58)
 # SPDX-License-Identifier: MIT
 
 import shutil
