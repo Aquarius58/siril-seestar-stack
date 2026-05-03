@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Seestar Debayer & Stack
-# Copyright (c) 2026 Thomas Rudolph (@Aquarius58)
+# Copyright (c) 2026 Aquarius58
 # SPDX-License-Identifier: MIT
 
 import shutil
@@ -40,7 +40,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -48,7 +47,7 @@ from PyQt6.QtWidgets import (
 
 
 # User settings
-SCRIPT_VERSION = "0.2.1"
+SCRIPT_VERSION = "0.2.2"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
 
@@ -886,7 +885,10 @@ class StackWindow(QWidget):
 
         layout = QVBoxLayout()
 
-        intro = QLabel("Waehle den Ordner mit den FITS-Lights und starte den Stack-Workflow.")
+        intro = QLabel(
+            "Waehle den Ordner mit den originalen Seestar .fit-Bildern sowie "
+            "die Debayer- und Stack-Optionen. Danach auf Start klicken."
+        )
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -899,7 +901,7 @@ class StackWindow(QWidget):
         row.addWidget(browse_button)
         layout.addLayout(row)
 
-        plan_group = QGroupBox("Stack-Plaene")
+        plan_group = QGroupBox("Stack")
         plan_layout = QFormLayout()
 
         self.plan_mode_combo = QComboBox()
@@ -940,7 +942,7 @@ class StackWindow(QWidget):
         plan_layout.addRow("Gruppe 3", self.build_plan_row(all_label, self.plan_all_check, self.plan_all_show_button))
         plan_group.setLayout(plan_layout)
 
-        cfa_group = QGroupBox("CFA Output")
+        cfa_group = QGroupBox("CFA Debayer")
         cfa_layout = QHBoxLayout()
         self.channel_checks: dict[str, QCheckBox] = {}
         for channel_key, channel in CFA_CHANNELS.items():
@@ -951,15 +953,8 @@ class StackWindow(QWidget):
         cfa_layout.addStretch(1)
         cfa_group.setLayout(cfa_layout)
 
-        tabs = QTabWidget()
-        stack_tab = QWidget()
-        stack_layout = QVBoxLayout(stack_tab)
-        stack_layout.addWidget(plan_group)
-        stack_layout.addWidget(cfa_group)
-        stack_layout.addStretch(1)
-        tabs.addTab(stack_tab, "Stack")
-        tabs.setDocumentMode(True)
-        layout.addWidget(tabs)
+        layout.addWidget(cfa_group)
+        layout.addWidget(plan_group)
 
         button_row = QHBoxLayout()
         self.help_button = QPushButton("Help")
@@ -1108,7 +1103,7 @@ class StackWindow(QWidget):
 
     def build_help_text(self) -> str:
         return (
-            "Diese App stackt Seestar-FITS-Lights mit Siril.\n\n"
+            "Diese App debayert und stackt Seestar Bilder mit Siril.\n\n"
             "Ablauf:\n"
             "1. Ordner mit .fit/.fits-Lights waehlen.\n"
             "2. Stack-Plaene auswaehlen.\n"

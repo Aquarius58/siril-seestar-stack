@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-05-03
+
+- Improved the main window wording for original Seestar `.fit` images and Debayer/Stack options.
+- Removed the redundant `Stack` tab and placed `CFA Debayer` above `Stack`.
+- Renamed the option groups to `CFA Debayer` and `Stack`.
+
 ## 0.2.1 - 2026-05-01
 
 - Fixed stack block processing so each block runs in its own clean temporary work directory.
