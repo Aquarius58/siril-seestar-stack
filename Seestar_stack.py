@@ -62,6 +62,7 @@ REJECTION_HIGH = 3.0
 USE_REJECTION_MAPS = True
 NONORM = True
 MIN_FRAMES_PER_STACK = 2
+MIN_STACK_COMPLETION_FRACTION = 0.30
 
 REGISTRATION_TRANSFORM = "similarity"
 REGISTRATION_INTERPOLATION = "lanczos4"
@@ -71,7 +72,6 @@ REGISTRATION_MINPAIRS = 10
 
 TEMP_BASENAME = "tmp"
 DEFAULT_SUBFRAME_EXPOSURE = 10.0
-MIN_STACK_EXPOSURE_SECONDS = 30.0
 DEBAYER_CFA_TO_LUMA = True
 KEEP_LUMA_IMAGES = True
 OVERWRITE_RESULTS = True
@@ -276,16 +276,26 @@ def compute_midpoint(block_frames: list[FitsFrame]) -> tuple[datetime, float]:
     return midpoint.astimezone(timezone.utc), total_exposure
 
 
-def stack_meets_minimum(frames: list[FitsFrame]) -> tuple[bool, float]:
+def minimum_stack_exposure(plan: StackPlan) -> float:
+    if plan.duration_seconds is None:
+        return 0.0
+    return plan.duration_seconds * MIN_STACK_COMPLETION_FRACTION
+
+
+def stack_meets_minimum(frames: list[FitsFrame], plan: StackPlan) -> tuple[bool, float, float]:
     total_exposure = sum(frame.exptime for frame in frames)
+    minimum_exposure = minimum_stack_exposure(plan)
     return (
         len(frames) >= MIN_FRAMES_PER_STACK
-        and total_exposure >= MIN_STACK_EXPOSURE_SECONDS
-    ), total_exposure
+        and total_exposure >= minimum_exposure
+    ), total_exposure, minimum_exposure
 
 
-def stack_minimum_text() -> str:
-    return f"{MIN_FRAMES_PER_STACK} Frames und {MIN_STACK_EXPOSURE_SECONDS:g}s Gesamtbelichtung"
+def stack_minimum_text(plan: StackPlan) -> str:
+    minimum_exposure = minimum_stack_exposure(plan)
+    if minimum_exposure <= 0:
+        return f"{MIN_FRAMES_PER_STACK} Frames"
+    return f"{MIN_FRAMES_PER_STACK} Frames und {minimum_exposure:g}s Gesamtbelichtung"
 
 
 def write_midpoint_header(path: Path, mid_time: datetime, total_exposure: float, frame_count: int) -> None:
@@ -824,11 +834,11 @@ class StackWorker(QThread):
                 outname = f"stack_{plan.suffix}_{start_idx:05d}-{end_idx:05d}"
                 block_tmp_dir = tmp_dir / f"{outname}_work"
 
-                meets_minimum, block_exposure = stack_meets_minimum(block)
+                meets_minimum, block_exposure, minimum_exposure = stack_meets_minimum(block, plan)
                 if not meets_minimum:
                     self.emit_log(
                         f"[WARN] Ueberspringe {outname}: nur {len(block)} Frames / "
-                        f"{block_exposure:g}s, mindestens {stack_minimum_text()} erforderlich."
+                        f"{block_exposure:g}s, mindestens {stack_minimum_text(plan)} erforderlich."
                     )
                     continue
 
@@ -870,7 +880,7 @@ class StackWorker(QThread):
                 if len(registered_files) < MIN_FRAMES_PER_STACK:
                     self.emit_log(
                         f"[WARN] Ueberspringe {outname}: nur {len(registered_files)} von "
-                        f"{len(block)} Frames registriert, mindestens {stack_minimum_text()} erforderlich."
+                        f"{len(block)} Frames registriert, mindestens {stack_minimum_text(plan)} erforderlich."
                     )
                     self.move_siril_to_safe_directory(siril)
                     cleanup_remove_dir(block_tmp_dir, self.emit_log)
@@ -885,11 +895,11 @@ class StackWorker(QThread):
                     block,
                     registered_files,
                 )
-                if total_exposure < MIN_STACK_EXPOSURE_SECONDS:
+                if total_exposure < minimum_exposure:
                     self.emit_log(
                         f"[WARN] Ueberspringe {outname}: registrierte Frames haben nur "
                         f"{total_exposure:g}s Gesamtbelichtung, mindestens "
-                        f"{MIN_STACK_EXPOSURE_SECONDS:g}s erforderlich."
+                        f"{minimum_exposure:g}s erforderlich."
                     )
                     self.move_siril_to_safe_directory(siril)
                     cleanup_remove_dir(block_tmp_dir, self.emit_log)
@@ -1188,7 +1198,9 @@ class StackWindow(QWidget):
             f"- OVERWRITE_RESULTS steht aktuell auf {OVERWRITE_RESULTS}.\n"
             "- Wenn OVERWRITE_RESULTS = False ist, bricht der Lauf bei vorhandenen Ergebnisordnern ab.\n\n"
             "Stack-Qualitaet:\n"
-            f"- Stack-Bloecke mit weniger als {stack_minimum_text()} werden uebersprungen.\n"
+            f"- Stack-Bloecke brauchen mindestens {MIN_FRAMES_PER_STACK} Frames.\n"
+            f"- Bei Zeit-Plaenen muessen sie zusaetzlich mindestens "
+            f"{MIN_STACK_COMPLETION_FRACTION * 100:g}% der geplanten Stackzeit erreichen.\n"
             "- Nach der Registrierung wird geprueft, ob alle Frames registriert wurden.\n\n"
             "FITS-Header:\n"
             "- DATE-OBS ist erforderlich; Dateien ohne DATE-OBS werden uebersprungen.\n"

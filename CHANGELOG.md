@@ -4,7 +4,7 @@
 
 - Fixed stacked FITS `EXPTIME` after partial registration so it reflects only the frames actually used by Siril.
 - Added deterministic temporary source numbering so registered `r_tmp_*.fit` files can be mapped back to their source frames.
-- Changed the minimum stack acceptance logic from a fixed 3-frame rule to a combined minimum of 2 frames and 30 seconds total exposure.
+- Changed the minimum stack acceptance logic from a fixed 3-frame rule to at least 2 frames plus, for time-based plans, a minimum exposure derived from the selected stack duration.
 - Updated stack log messages to include the final `EXPTIME` written to the FITS header.
 
 ## 0.2.2 - 2026-05-03
