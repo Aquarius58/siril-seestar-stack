@@ -47,7 +47,7 @@ from PyQt6.QtWidgets import (
 
 
 # User settings
-SCRIPT_VERSION = "0.2.2"
+SCRIPT_VERSION = "0.2.3"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
 
@@ -61,7 +61,7 @@ REJECTION_LOW = 3.0
 REJECTION_HIGH = 3.0
 USE_REJECTION_MAPS = True
 NONORM = True
-MIN_FRAMES_PER_STACK = 3
+MIN_FRAMES_PER_STACK = 2
 
 REGISTRATION_TRANSFORM = "similarity"
 REGISTRATION_INTERPOLATION = "lanczos4"
@@ -71,6 +71,7 @@ REGISTRATION_MINPAIRS = 10
 
 TEMP_BASENAME = "tmp"
 DEFAULT_SUBFRAME_EXPOSURE = 10.0
+MIN_STACK_EXPOSURE_SECONDS = 30.0
 DEBAYER_CFA_TO_LUMA = True
 KEEP_LUMA_IMAGES = True
 OVERWRITE_RESULTS = True
@@ -275,6 +276,18 @@ def compute_midpoint(block_frames: list[FitsFrame]) -> tuple[datetime, float]:
     return midpoint.astimezone(timezone.utc), total_exposure
 
 
+def stack_meets_minimum(frames: list[FitsFrame]) -> tuple[bool, float]:
+    total_exposure = sum(frame.exptime for frame in frames)
+    return (
+        len(frames) >= MIN_FRAMES_PER_STACK
+        and total_exposure >= MIN_STACK_EXPOSURE_SECONDS
+    ), total_exposure
+
+
+def stack_minimum_text() -> str:
+    return f"{MIN_FRAMES_PER_STACK} Frames und {MIN_STACK_EXPOSURE_SECONDS:g}s Gesamtbelichtung"
+
+
 def write_midpoint_header(path: Path, mid_time: datetime, total_exposure: float, frame_count: int) -> None:
     iso_mid = mid_time.isoformat().replace("+00:00", "Z")
     with fits.open(path, mode="update") as hdul:
@@ -455,6 +468,38 @@ def build_stack_command(outname: str) -> str:
 
 def collect_registered_files(tmp_dir: Path) -> list[Path]:
     return sorted(path for path in tmp_dir.glob(f"r_{TEMP_BASENAME}_*.fit") if not is_hidden_fits(path))
+
+
+def registered_frame_indices(registered_files: list[Path], frame_count: int) -> list[int]:
+    indices: list[int] = []
+    prefix = f"r_{TEMP_BASENAME}_"
+    for path in registered_files:
+        stem = path.stem
+        if not stem.startswith(prefix):
+            continue
+        try:
+            sequence_number = int(stem.removeprefix(prefix))
+        except ValueError:
+            continue
+        index = sequence_number - 1
+        if 0 <= index < frame_count:
+            indices.append(index)
+    return sorted(set(indices))
+
+
+def registered_stack_metadata(
+    block_frames: list[FitsFrame],
+    registered_files: list[Path],
+) -> tuple[datetime, float, int]:
+    indices = registered_frame_indices(registered_files, len(block_frames))
+    if len(indices) != len(registered_files):
+        raise ValueError(
+            f"Kann registrierte Frames nicht eindeutig auf Quellframes abbilden "
+            f"({len(indices)}/{len(registered_files)})."
+        )
+    registered_frames = [block_frames[index] for index in indices]
+    midpoint, total_exposure = compute_midpoint(registered_frames)
+    return midpoint, total_exposure, len(registered_frames)
 
 
 def should_log_progress(index: int, total: int) -> bool:
@@ -779,10 +824,11 @@ class StackWorker(QThread):
                 outname = f"stack_{plan.suffix}_{start_idx:05d}-{end_idx:05d}"
                 block_tmp_dir = tmp_dir / f"{outname}_work"
 
-                if len(block) < MIN_FRAMES_PER_STACK:
+                meets_minimum, block_exposure = stack_meets_minimum(block)
+                if not meets_minimum:
                     self.emit_log(
-                        f"[WARN] Ueberspringe {outname}: nur {len(block)} Frames, "
-                        f"mindestens {MIN_FRAMES_PER_STACK} erforderlich."
+                        f"[WARN] Ueberspringe {outname}: nur {len(block)} Frames / "
+                        f"{block_exposure:g}s, mindestens {stack_minimum_text()} erforderlich."
                     )
                     continue
 
@@ -791,12 +837,11 @@ class StackWorker(QThread):
                     f"Block {block_number}/{total_blocks}: "
                     f"Frames {start_idx:05d}-{end_idx:05d}."
                 )
-                midpoint, total_exposure = compute_midpoint(block)
                 if block_tmp_dir.exists():
                     retry_path(lambda: remove_dir(block_tmp_dir))
                 block_tmp_dir.mkdir(parents=True)
-                for frame in block:
-                    shutil.copy2(frame.path, block_tmp_dir / frame.path.name)
+                for frame_index, frame in enumerate(block, start=1):
+                    shutil.copy2(frame.path, block_tmp_dir / f"source_{frame_index:05d}.fit")
 
                 self.run_cmd(siril, f'cd "{siril_path(block_tmp_dir)}"')
                 self.run_cmd(siril, f"link {TEMP_BASENAME} -out=.")
@@ -825,7 +870,7 @@ class StackWorker(QThread):
                 if len(registered_files) < MIN_FRAMES_PER_STACK:
                     self.emit_log(
                         f"[WARN] Ueberspringe {outname}: nur {len(registered_files)} von "
-                        f"{len(block)} Frames registriert, mindestens {MIN_FRAMES_PER_STACK} erforderlich."
+                        f"{len(block)} Frames registriert, mindestens {stack_minimum_text()} erforderlich."
                     )
                     self.move_siril_to_safe_directory(siril)
                     cleanup_remove_dir(block_tmp_dir, self.emit_log)
@@ -836,6 +881,19 @@ class StackWorker(QThread):
                         "stacke die registrierten Frames."
                     )
 
+                midpoint, total_exposure, stacked_frame_count = registered_stack_metadata(
+                    block,
+                    registered_files,
+                )
+                if total_exposure < MIN_STACK_EXPOSURE_SECONDS:
+                    self.emit_log(
+                        f"[WARN] Ueberspringe {outname}: registrierte Frames haben nur "
+                        f"{total_exposure:g}s Gesamtbelichtung, mindestens "
+                        f"{MIN_STACK_EXPOSURE_SECONDS:g}s erforderlich."
+                    )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
                 self.run_cmd(siril, build_stack_command(outname))
 
                 output_fit = block_tmp_dir / f"{outname}.fit"
@@ -848,7 +906,7 @@ class StackWorker(QThread):
                     continue
 
                 try:
-                    write_midpoint_header(output_fit, midpoint, total_exposure, len(registered_files))
+                    write_midpoint_header(output_fit, midpoint, total_exposure, stacked_frame_count)
                 except Exception as exc:
                     raise RuntimeError(
                         f"Stack-Datei erzeugt, Header-Update fehlgeschlagen fuer {outname}: {exc}"
@@ -856,7 +914,8 @@ class StackWorker(QThread):
                 shutil.move(str(output_fit), result_dir / output_fit.name)
                 self.emit_log(
                     f"[OK] Gruppe {plan.name} {start_idx:05d}-{end_idx:05d}: "
-                    f"{output_fit.name} gespeichert ({len(registered_files)}/{len(block)} Frames)."
+                    f"{output_fit.name} gespeichert ({stacked_frame_count}/{len(block)} Frames, "
+                    f"EXPTIME={total_exposure:g}s)."
                 )
                 self.move_siril_to_safe_directory(siril)
                 cleanup_remove_dir(block_tmp_dir, self.emit_log)
@@ -1129,7 +1188,7 @@ class StackWindow(QWidget):
             f"- OVERWRITE_RESULTS steht aktuell auf {OVERWRITE_RESULTS}.\n"
             "- Wenn OVERWRITE_RESULTS = False ist, bricht der Lauf bei vorhandenen Ergebnisordnern ab.\n\n"
             "Stack-Qualitaet:\n"
-            f"- Stack-Bloecke mit weniger als {MIN_FRAMES_PER_STACK} Frames werden uebersprungen.\n"
+            f"- Stack-Bloecke mit weniger als {stack_minimum_text()} werden uebersprungen.\n"
             "- Nach der Registrierung wird geprueft, ob alle Frames registriert wurden.\n\n"
             "FITS-Header:\n"
             "- DATE-OBS ist erforderlich; Dateien ohne DATE-OBS werden uebersprungen.\n"
