@@ -1,73 +1,115 @@
 # siril-seestar-stack
 
-Process raw CFA Seestar images as the first step of a variable star photometry pipeline: debayer and convert to luminance or R/G/B, then stack in user-defined groups.
+Siril Python script for preprocessing Seestar FITS light frames: debayer raw CFA data, export derived L/R/G/B channel images, and stack frames in user-defined groups.
 
-## Overview
-
-This is a Siril Python script that automates the preprocessing of raw CFA (Color Filter Array) Seestar images for variable star photometry. It handles:
-
-- **Debayering**: Convert raw CFA data to RGB
-- **Luminance conversion**: Generate luminance channel from RGB
-- **Image stacking**: Stack images in user-defined groups
-- **Pipeline integration**: Works as the first step in a complete variable star photometry workflow
+This script is a preprocessing tool. It prepares Seestar FITS frames for downstream photometry workflows; it does not perform photometric measurement itself.
 
 ## Features
 
-- Batch processing of raw Seestar images
-- Configurable stacking groups
-- Integration with Siril's Python environment
-- Preserves image metadata
-- Efficient processing pipeline
+- Debayers raw CFA/Bayer Seestar FITS frames in Siril.
+- Exports derived `L`, `R`, `G`, and `B` channel images.
+- Uses ITU-R BT.601 luma weights for `L`: `0.299 R + 0.587 G + 0.114 B`.
+- Stacks by time span, by frame count, or all frames.
+- Writes stack timing metadata to FITS headers.
+- Confirms before clearing existing product folders.
+- Ends each run with a compact summary in the log.
 
 ## Requirements
 
-- **Siril** (with Python support enabled)
-- **Python 3.7+** (Siril's internal Python environment)
-- Raw CFA Seestar image files
+- Siril with Python scripting support.
+- Siril Python environment with `sirilpy`, `PyQt6`, `astropy`, and `numpy`.
+- Seestar `.fit` or `.fits` light frames in one dedicated source folder.
 
-## Installation
+The script is intended to run inside Siril's Python environment, not as a standalone system-Python program.
 
-1. Clone this repository or download the script
-2. Place the script in your Siril scripts directory or your project folder
-3. Ensure you're running it within Siril's Python environment
+## Installation in Siril
+
+1. Copy `Seestar_stack.py` into a Siril script directory.
+2. Open Siril.
+3. Add the script directory in Siril Preferences if needed.
+4. Start the script from Siril's Scripts menu.
+
+Repository:
 
 ```bash
-git clone https://github.com/Aquarius58/siril-seestar-stack.git
+git clone https://gitlab.com/Aquarius58/siril-seestar-stack.git
 cd siril-seestar-stack
 ```
 
-## Usage
+## Workflow
 
-Run the script from within Siril's Python console or as a Siril Python script:
+1. Copy the original Seestar `.fit` / `.fits` light frames into one dedicated folder.
+2. Start Siril.
+3. Run `Seestar_stack.py` from the Scripts menu.
+4. Select the folder containing the FITS light frames.
+5. Select CFA output channels as needed: `L`, `R`, `G`, `B`.
+6. Select stack grouping: seconds, frame count, or `ALL`.
+7. Click `Start`.
+8. Check the product folders, log summary, and FITS headers.
 
-```python
-# Example usage
-python siril_seestar_stack.py
+## Output Folders
+
+Products are written next to the selected source folder. Original input frames are not modified.
+
+Example source folder:
+
+```text
+Light_001
 ```
 
-[Detailed usage documentation coming soon]
+Possible product folders:
 
-## Configuration
+```text
+Light_001_l
+Light_001_r
+Light_001_g
+Light_001_b
+Light_001_l-stack100sec
+Light_001_l-stack1000sec
+Light_001_l-stackall
+```
 
-[Add configuration options and examples here]
+For non-CFA input, stack folders use no channel suffix, for example:
 
-## Contributing
+```text
+Light_001-stack100sec
+```
 
-Found a bug or have a feature request? Please open an [issue](https://github.com/Aquarius58/siril-seestar-stack/issues).
+Temporary folders use names such as `<source>-tmp100sec`, `<source>-tmpdebayer`, or `<source>-tmp_g`. They are removed after a successful run.
 
-For questions, discussions, or contributions, use the [Issues](https://github.com/Aquarius58/siril-seestar-stack/issues) section.
+## Overwrite Safety
+
+If product folders already exist, the script lists them before the run starts and asks for confirmation. Existing product folders are cleared only after explicit confirmation.
+
+Use a dedicated source folder containing only the Seestar FITS frames for one session.
+
+## Timing Notes
+
+Seestar `DATE-OBS` is treated as the exposure end time of an individual frame.
+
+For stack products:
+
+- `DATE-OBS` is rewritten to the UTC mid-exposure time of the stack block.
+- `EXPTIME` is rewritten to the total exposure time of the frames used in the stack.
+- `NCOMBINE` records the number of frames used in the stack.
+
+The script assumes that the input Seestar FITS timestamps are already correct. It does not apply clock corrections or camera-specific timestamp corrections.
+
+## Stack Acceptance
+
+Stack blocks must meet the minimum criteria configured in the script:
+
+- at least `MIN_FRAMES_PER_STACK` registered frames
+- for time-based plans, at least `MIN_STACK_COMPLETION_FRACTION` of the requested duration
+
+End-of-sequence blocks are accepted when these criteria are met.
+
+## Support
+
+Bug reports and support requests:
+
+https://gitlab.com/Aquarius58/siril-seestar-stack/-/issues
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Related Resources
-
-- [Siril Documentation](https://free-astro.org/index.php/Siril)
-- Variable star photometry best practices
-- Seestar imaging resources
-
----
-
-**Note**: This script is designed to run only within Siril's Python environment and cannot be executed independently.
-
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
