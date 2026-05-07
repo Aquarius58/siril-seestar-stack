@@ -11,7 +11,7 @@ This script is a preprocessing tool. It prepares Seestar FITS frames for downstr
 - Uses ITU-R BT.601 luma weights for `L`: `0.299 R + 0.587 G + 0.114 B`.
 - Stacks by time span, by frame count, or all frames.
 - Writes stack timing metadata to FITS headers.
-- Confirms before clearing existing product folders.
+- Confirms before clearing existing result folders.
 - Ends each run with a compact summary in the log.
 
 ## Requirements
@@ -45,11 +45,11 @@ cd siril-seestar-stack
 5. Select CFA output channels as needed: `L`, `R`, `G`, `B`.
 6. Select stack grouping: seconds, frame count, or `ALL`.
 7. Click `Start`.
-8. Check the product folders, log summary, and FITS headers.
+8. Check the result folders, log summary, and FITS headers.
 
-## Output Folders
+## Result Folders
 
-Products are written next to the selected source folder. Original input frames are not modified.
+Results are written next to the selected source folder. Original input frames are not modified.
 
 Example source folder:
 
@@ -57,7 +57,7 @@ Example source folder:
 Light_001
 ```
 
-Possible product folders:
+Possible result folders:
 
 ```text
 Light_001_l
@@ -79,7 +79,7 @@ Temporary folders use names such as `<source>-tmp100sec`, `<source>-tmpdebayer`,
 
 ## Overwrite Safety
 
-If product folders already exist, the script lists them before the run starts and asks for confirmation. Existing product folders are cleared only after explicit confirmation.
+If result folders already exist, the script lists them before the run starts and asks for confirmation. Existing result folders are cleared only after explicit confirmation.
 
 Use a dedicated source folder containing only the Seestar FITS frames for one session.
 
@@ -87,7 +87,7 @@ Use a dedicated source folder containing only the Seestar FITS frames for one se
 
 Seestar `DATE-OBS` is treated as the exposure end time of an individual frame.
 
-For stack products:
+For stack results:
 
 - `DATE-OBS` is rewritten to the UTC mid-exposure time of the stack block.
 - `EXPTIME` is rewritten to the total exposure time of the frames used in the stack.
