@@ -2,8 +2,6 @@
 
 Siril Python preprocessing script for original Seestar `.fit` frames. The script prepares CFA/Bayer data for downstream photometry workflows by creating photometry-oriented L/R/G/B products and registered stack groups.
 
-This tool does not perform photometric measurement.
-
 ## Features
 
 - Uses original Seestar `.fit` frames directly from one selected source folder.
@@ -13,6 +11,12 @@ This tool does not perform photometric measurement.
 - Creates stack groups by duration, by frame count, or `ALL`.
 - Writes photometry-oriented FITS timing metadata.
 - Confirms before clearing existing result folders.
+
+## Limitations
+
+This script does not perform complete photometric measurement.
+
+A separate companion tool for full differential variable-star photometry is already under development and is expected to be released in September 2026. It will be maintained in its own repository.
 
 ## Requirements
 
