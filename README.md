@@ -2,6 +2,10 @@
 
 Siril Python preprocessing script for original Seestar `.fit` frames. The script prepares CFA/Bayer data for downstream photometry workflows by creating photometry-oriented L/R/G/B products and registered stack groups.
 
+## Screenshot
+
+<img src="docs/main_screen.png" alt="Main window of the Seestar CFA extraction and stacking script" width="700">
+
 ## Features
 
 - Uses original Seestar `.fit` frames directly from one selected source folder.
