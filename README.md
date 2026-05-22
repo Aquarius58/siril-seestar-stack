@@ -4,7 +4,7 @@ Siril Python preprocessing script for original Seestar `.fit` frames. The script
 
 ## Screenshot
 
-<img src="docs/main_screen.png" alt="Main window of the Seestar CFA extraction and stacking script" width="300">
+<img src="docs/main_screen.png" alt="Main window of the Seestar CFA extraction and stacking script" width="400">
 
 ## Features
 
