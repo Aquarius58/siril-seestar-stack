@@ -1,6 +1,6 @@
 """Seestar Photometry Stack
 
-Version: 0.2.3
+Version: 0.3.0
 Author: Thomas Rudolph (Aquarius58)
 Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
 Repository: https://github.com/Aquarius58/siril-seestar-stack
@@ -76,7 +76,7 @@ frames.
 from __future__ import annotations
 
 # Seestar Photometry Stack
-# Version: 0.2.3
+# Version: 0.3.0
 # Author: Thomas Rudolph (Aquarius58)
 # Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
 # Repository: https://github.com/Aquarius58/siril-seestar-stack
@@ -87,9 +87,13 @@ import shutil
 import sys
 import time
 import importlib.util
+import os
+import tempfile
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import sirilpy as s
 
@@ -109,11 +113,14 @@ ensure_importable_module("PyQt6")
 ensure_importable_module("astropy")
 ensure_importable_module("numpy")
 
-import numpy as np
-from astropy.io import fits
-from astropy.time import Time
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (
+import numpy as np  # noqa: E402
+from astropy.io import fits  # noqa: E402
+from astropy.io.fits.verify import VerifyWarning  # noqa: E402
+from astropy.time import Time  # noqa: E402
+from astropy.utils.exceptions import AstropyUserWarning  # noqa: E402
+from PyQt6.QtCore import QThread, pyqtSignal  # noqa: E402
+from PyQt6.QtGui import QColor, QPalette  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
     QApplication,
     QCheckBox,
     QComboBox,
@@ -128,16 +135,23 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStyleFactory,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+warnings.filterwarnings(
+    "ignore",
+    message=r"The following header keyword is invalid or follows an unrecognized non-standard convention:.*",
+    category=AstropyUserWarning,
+)
 
 # User settings
-SCRIPT_VERSION = "0.2.3"
+SCRIPT_VERSION = "0.3.0"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
+SSAP_HEADER_VALUE = "SeePhot_CFA.py"
 
 DEFAULT_PLAN_MODE = "time"
 DEFAULT_DURATION_PLANS = (100, 1000)
@@ -170,9 +184,132 @@ VERBOSE_COMMAND_LOG = False
 VERBOSE_FRAME_LOG = False
 PROGRESS_LOG_INTERVAL = 50
 
-WINDOW_TITLE = f"Seestar Photometry Stack {SCRIPT_VERSION}"
+WINDOW_TITLE = f"SeePhot Stack {SCRIPT_VERSION}"
+MAIN_WINDOW_OBJECT_NAME = "seephot_seestar_stack_main_window"
+SINGLE_INSTANCE_LOCK_PATH = Path(tempfile.gettempdir()) / "seephot_seestar_stack.lock"
+SINGLE_INSTANCE_LOCK_MAX_AGE_SECONDS = 12 * 60 * 60
 WINDOW_WIDTH = 380
+FULL_CHANNEL_WINDOW_WIDTH = 430
 WINDOW_HEIGHT = 520
+APP_DARK_STYLESHEET = """
+QWidget {
+    background-color: #202124;
+    color: #eceff4;
+    selection-background-color: #2f6fed;
+    selection-color: #ffffff;
+}
+QDialog, QMessageBox {
+    background-color: #202124;
+}
+QGroupBox {
+    border: 1px solid #3c4048;
+    border-radius: 4px;
+    margin-top: 12px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    padding: 0 4px;
+    background-color: #202124;
+    color: #d8dee9;
+}
+QLabel {
+    background: transparent;
+}
+QLineEdit, QTextEdit, QSpinBox {
+    background-color: #17191d;
+    border: 1px solid #3c4048;
+    color: #eceff4;
+}
+QLineEdit:disabled, QTextEdit:disabled, QSpinBox:disabled {
+    background-color: #1b202a;
+    color: #9aa3b2;
+}
+QCheckBox {
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #6b7280;
+    border-radius: 3px;
+    background-color: #17191d;
+}
+QCheckBox::indicator:hover {
+    border-color: #8ab4ff;
+}
+QCheckBox::indicator:checked {
+    background-color: #2f6fed;
+    border-color: #4f8cff;
+}
+QCheckBox::indicator:checked:hover {
+    background-color: #3b7cff;
+}
+QCheckBox::indicator:checked:disabled {
+    background-color: #32405a;
+    border-color: #4b5563;
+}
+QCheckBox::indicator:unchecked:disabled {
+    background-color: #1b202a;
+    border-color: #3c4048;
+}
+QCheckBox:disabled {
+    color: #9aa3b2;
+}
+QPushButton {
+    background-color: #2f6fed;
+    border: 1px solid #4f8cff;
+    border-radius: 5px;
+    color: #ffffff;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #3b7cff;
+}
+QPushButton:pressed {
+    background-color: #255bc7;
+}
+QPushButton:disabled {
+    background-color: #2a2d33;
+    border-color: #3c4048;
+    color: #8b94a3;
+}
+QToolTip {
+    color: #111111;
+    background-color: #fff8c6;
+    border: 1px solid #8a7a2f;
+}
+"""
+
+
+def configure_app_theme(app: QApplication) -> None:
+    """Apply the local dark Qt theme used on every platform."""
+
+    if sys.platform.startswith("win"):
+        try:
+            app.setStyle(QStyleFactory.create("Fusion"))
+        except Exception:
+            pass
+
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#202124"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#eceff4"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#17191d"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#24272d"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#fff8c6"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#111111"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#eceff4"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#2a2d33"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#eceff4"))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#2f6fed"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#9aa3b2"))
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#9aa3b2"))
+    app.setPalette(palette)
+    app.setStyleSheet(APP_DARK_STYLESHEET)
 
 CFA_CHANNELS = {
     "L": {
@@ -211,6 +348,7 @@ CFA_CHANNELS = {
 DEFAULT_CFA_CHANNELS = ("L",)
 BAYER_HEADER_KEYS = ("BAYERPAT", "XBAYROFF", "YBAYROFF", "ROWORDER")
 CFA_REQUIRED_COLORS = ("R", "G1", "G2", "B")
+LIGHTCURVE_IMAGE_SOURCES = frozenset(DEFAULT_CFA_CHANNELS + ("G",))
 
 @dataclass(frozen=True)
 class StackPlan:
@@ -330,6 +468,64 @@ def frames_need_cfa_split(frames: list[FitsFrame]) -> bool:
         return False
 
 
+def normalize_image_source(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if text in LIGHTCURVE_IMAGE_SOURCES:
+        return text
+    if "CFA_L" in text:
+        return "L"
+    if "CFA_G" in text:
+        return "G"
+    return ""
+
+
+def image_source_from_header(header: fits.Header) -> str:
+    sources: set[str] = set()
+    for key in ("FILTER", "CHANMODE", "CHANNEL", "CFA_CHAN", "CFA_CHANNEL"):
+        raw_value = header.get(key)
+        if raw_value is None or str(raw_value).strip() == "":
+            continue
+        source = normalize_image_source(raw_value)
+        if not source:
+            return ""
+        sources.add(source)
+    if len(sources) == 1:
+        return next(iter(sources))
+    return ""
+
+
+def image_source_for_path(path: Path) -> str:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", VerifyWarning)
+        return image_source_from_header(fits.getheader(path))
+
+
+def supported_lightcurve_image_source_for_frames(frames: list[FitsFrame]) -> str:
+    sources: set[str] = set()
+    for frame in frames[:3]:
+        source = image_source_for_path(frame.path)
+        if not source:
+            return ""
+        sources.add(source)
+    if len(sources) == 1:
+        return next(iter(sources))
+    return ""
+
+
+def require_supported_lightcurve_source(frames: list[FitsFrame], source_dir: Path) -> str:
+    image_source = supported_lightcurve_image_source_for_frames(frames)
+    if image_source:
+        return image_source
+    raise ValueError(
+        "Selected input is not CFA/Bayer data and does not carry unambiguous "
+        "Light Curve channel metadata. Select original Seestar CFA frames, or "
+        "use an already prepared L/G folder with FITS FILTER=L or FILTER=G. "
+        f"Source folder: {source_dir}"
+    )
+
+
 def collect_valid_fits(source_dir: Path, log_callback, skipped_callback=None) -> list[FitsFrame]:
     frames: list[FitsFrame] = []
     for path in sorted(source_dir.iterdir()):
@@ -447,15 +643,32 @@ def stack_minimum_text(plan: StackPlan) -> str:
     return f"{MIN_FRAMES_PER_STACK} frames and {minimum_exposure:g}s total exposure"
 
 
-def write_exposure_time_header(path: Path, metadata: ExposureTimeMetadata) -> None:
+def write_exposure_time_header(
+    path: Path,
+    metadata: ExposureTimeMetadata,
+    source_path: Path | None = None,
+) -> None:
     with fits.open(path, mode="update") as hdul:
         header = hdul[0].header
+        source_header = None
+        if source_path is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", VerifyWarning)
+                source_header = fits.getheader(source_path)
+        image_source = image_source_from_header(source_header) if source_header is not None else ""
+        header["SSAP"] = (SSAP_HEADER_VALUE, "Created by Siril Seestar stack app")
         header["DATE-OBS"] = (iso_utc(metadata.start_time), "Start of first used exposure (UTC)")
         header["DATE-END"] = (iso_utc(metadata.end_time), "End of last used exposure (UTC)")
         header["DATE-AVG"] = (iso_utc(metadata.avg_time), "Exposure-weighted midpoint (UTC)")
         header["MJD-AVG"] = (mjd_utc(metadata.avg_time), "Exposure-weighted midpoint (MJD)")
         header["EXPTIME"] = (float(metadata.total_exposure), "Summed exposure time in seconds")
         header["NCOMBINE"] = (metadata.frame_count, "Frames stacked")
+        if image_source:
+            channel = CFA_CHANNELS[image_source]
+            header["FILTER"] = (channel["filter"], channel["comment"])
+            source_chanmode = str(source_header.get("CHANMODE", "")).strip()
+            if normalize_image_source(source_chanmode) == image_source:
+                header["CHANMODE"] = source_chanmode
         hdul.flush()
 
 
@@ -567,6 +780,7 @@ def build_output_header(source_path: Path, channel_key: str) -> fits.Header:
         header["SRCFILT"] = (str(source_filter), "Original source filter")
     if source_bayerpat:
         header["CFAORIG"] = (str(source_bayerpat), "Original CFA pattern")
+    header["SSAP"] = (SSAP_HEADER_VALUE, "Created by Siril Seestar stack app")
     header["DATE-OBS"] = (iso_utc(time_metadata.start_time), "Start of exposure (UTC)")
     header["DATE-END"] = (iso_utc(time_metadata.end_time), "End of exposure (UTC)")
     header["DATE-AVG"] = (iso_utc(time_metadata.avg_time), "Exposure midpoint (UTC)")
@@ -748,7 +962,7 @@ def should_log_progress(index: int, total: int) -> bool:
 
 class StackWorker(QThread):
     log = pyqtSignal(str)
-    finished = pyqtSignal(bool, str)
+    finished = pyqtSignal(bool, str, str)
 
     def __init__(
         self,
@@ -756,12 +970,14 @@ class StackWorker(QThread):
         selected_plans: tuple[StackPlan, ...],
         selected_channels: tuple[str, ...],
         allow_overwrite: bool = DEFAULT_OVERWRITE_RESULTS,
+        require_lightcurve_filter: bool = False,
     ):
         super().__init__()
         self.source_dir = Path(source_dir).expanduser()
         self.selected_plans = selected_plans
         self.selected_channels = selected_channels
         self.allow_overwrite = allow_overwrite
+        self.require_lightcurve_filter = require_lightcurve_filter
         self.cfa_split_dirs: tuple[Path, ...] | None = None
         self.plan_temp_dirs = tuple(plan_temp_dir(self.source_dir, plan) for plan in selected_plans)
         self.stats = RunStats()
@@ -790,8 +1006,15 @@ class StackWorker(QThread):
             self.emit_log(f"> {command}")
         siril.cmd(command)
 
+    def close_siril_display_context(self, siril: s.SirilInterface) -> None:
+        try:
+            siril.cmd("close")
+        except Exception:
+            pass
+
     def move_siril_to_safe_directory(self, siril: s.SirilInterface) -> None:
         safe_dir = self.source_dir.parent
+        self.close_siril_display_context(siril)
         self.run_cmd(siril, f'cd "{siril_path(safe_dir)}"')
 
     def run(self) -> None:
@@ -802,9 +1025,9 @@ class StackWorker(QThread):
                 message = f"Stacking complete. Latest results are in {result_dir}"
             else:
                 message = f"Channel export complete. Results are in {result_dir}"
-            self.finished.emit(True, message)
+            self.finished.emit(True, message, str(result_dir))
         except Exception as exc:
-            self.finished.emit(False, str(exc))
+            self.finished.emit(False, str(exc), "")
 
     def run_stack(self) -> Path:
         if not self.source_dir.is_dir():
@@ -826,12 +1049,18 @@ class StackWorker(QThread):
         needs_cfa_split = frames_need_cfa_split(source_frames)
         if needs_cfa_split and not self.selected_channels:
             raise ValueError("Select at least one CFA output channel.")
+        if self.require_lightcurve_filter and not needs_cfa_split:
+            image_source = require_supported_lightcurve_source(source_frames, self.source_dir)
+            self.emit_log(
+                f"[INFO] Input is already prepared as FILTER={image_source}; stacking without CFA split."
+            )
         self.preflight_output_dirs(needs_cfa_split)
 
         siril = s.SirilInterface()
         siril.connect()
         if VERBOSE_COMMAND_LOG:
             self.emit_log("[OK] Connected to Siril.")
+        self.move_siril_to_safe_directory(siril)
 
         final_result_dir: Path | None = None
         completed = False
@@ -1170,7 +1399,16 @@ class StackWorker(QThread):
                     self.move_siril_to_safe_directory(siril)
                     cleanup_remove_dir(block_tmp_dir, self.emit_log)
                     continue
-                self.run_cmd(siril, build_stack_command(outname))
+                try:
+                    self.run_cmd(siril, build_stack_command(outname))
+                except Exception as exc:
+                    self.stats.skipped_stack_blocks += 1
+                    self.emit_log(
+                        f"[WARN] Skipping {outname}: stacking failed ({exc})."
+                    )
+                    self.move_siril_to_safe_directory(siril)
+                    cleanup_remove_dir(block_tmp_dir, self.emit_log)
+                    continue
 
                 output_fit = block_tmp_dir / f"{outname}.fit"
                 if not output_fit.exists():
@@ -1183,7 +1421,8 @@ class StackWorker(QThread):
                     continue
 
                 try:
-                    write_exposure_time_header(output_fit, stack_time)
+                    source_header_path = block[0].path if block else None
+                    write_exposure_time_header(output_fit, stack_time, source_header_path)
                 except Exception as exc:
                     raise RuntimeError(
                         f"Stack file was created, but FITS header update failed for {outname}: {exc}"
@@ -1210,15 +1449,45 @@ class StackWorker(QThread):
 
 
 class StackWindow(QWidget):
-    def __init__(self):
+    stack_result_ready = pyqtSignal(str)
+
+    def __init__(
+        self,
+        allowed_channels: tuple[str, ...] | None = None,
+        lightcurve_mode: bool = False,
+        busy_context: dict[str, object] | None = None,
+    ):
         super().__init__()
+        self.setObjectName(MAIN_WINDOW_OBJECT_NAME)
         self.worker: StackWorker | None = None
         self.source_dir = str(Path.home())
+        self.lightcurve_mode = lightcurve_mode
+        self.allowed_channels = self.normalized_allowed_channels(allowed_channels)
+        self.busy_context = busy_context or {}
         self.init_ui()
+
+    def normalized_allowed_channels(self, allowed_channels: tuple[str, ...] | None) -> tuple[str, ...]:
+        if allowed_channels is None:
+            return tuple(CFA_CHANNELS)
+        normalized = tuple(
+            channel_key.strip().upper()
+            for channel_key in allowed_channels
+            if channel_key.strip().upper() in CFA_CHANNELS
+        )
+        if not normalized:
+            raise ValueError("allowed_channels does not contain any known CFA channel")
+        return normalized
 
     def init_ui(self) -> None:
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setStyleSheet(APP_DARK_STYLESHEET)
+        window_width = (
+            FULL_CHANNEL_WINDOW_WIDTH
+            if len(self.allowed_channels) > 2
+            else WINDOW_WIDTH
+        )
+        self.resize(window_width, WINDOW_HEIGHT)
+        self.setMinimumWidth(window_width)
 
         layout = QVBoxLayout()
 
@@ -1231,13 +1500,21 @@ class StackWindow(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        if self.lightcurve_mode:
+            lightcurve_note = QLabel(
+                "Light Curve mode: Only L or G outputs are used for V-calibrated Light Curves."
+            )
+            lightcurve_note.setWordWrap(True)
+            layout.addWidget(lightcurve_note)
+
         row = QHBoxLayout()
         self.source_edit = QLineEdit(self.source_dir)
-        self.source_edit.setReadOnly(True)
-        browse_button = QPushButton("Choose Folder")
-        browse_button.clicked.connect(self.choose_directory)
+        self.source_edit.setPlaceholderText("Paste or choose the folder with original Seestar FITS frames")
+        self.source_edit.editingFinished.connect(self.update_source_dir_from_edit)
+        self.browse_button = QPushButton("Choose Folder")
+        self.browse_button.clicked.connect(self.choose_directory)
         row.addWidget(self.source_edit)
-        row.addWidget(browse_button)
+        row.addWidget(self.browse_button)
         layout.addLayout(row)
 
         plan_group = QGroupBox("Stack Groups")
@@ -1285,8 +1562,10 @@ class StackWindow(QWidget):
 
         cfa_group = QGroupBox("CFA Photometry Channels")
         cfa_layout = QHBoxLayout()
+        cfa_layout.setSpacing(18)
         self.channel_checks: dict[str, QCheckBox] = {}
-        for channel_key, channel in CFA_CHANNELS.items():
+        for channel_key in self.allowed_channels:
+            channel = CFA_CHANNELS[channel_key]
             check = QCheckBox(str(channel["label"]))
             check.setChecked(channel_key in DEFAULT_CFA_CHANNELS)
             self.channel_checks[channel_key] = check
@@ -1302,8 +1581,12 @@ class StackWindow(QWidget):
         self.help_button.clicked.connect(self.show_help)
         self.stack_button = QPushButton("Start")
         self.stack_button.clicked.connect(self.start_stack)
-        button_row.addWidget(self.help_button)
         button_row.addWidget(self.stack_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.help_button)
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.close)
+        button_row.addWidget(self.close_button)
         layout.addLayout(button_row)
 
         self.log_view = QTextEdit()
@@ -1313,15 +1596,65 @@ class StackWindow(QWidget):
         self.setLayout(layout)
         self.update_plan_spinboxes()
 
+    def set_run_controls_enabled(self, enabled: bool) -> None:
+        self.source_edit.setEnabled(enabled)
+        self.browse_button.setEnabled(enabled)
+        self.plan_mode_combo.setEnabled(enabled)
+        self.plan_one_spin.setEnabled(enabled)
+        self.plan_two_spin.setEnabled(enabled)
+        self.plan_one_check.setEnabled(enabled)
+        self.plan_two_check.setEnabled(enabled)
+        self.plan_all_check.setEnabled(enabled)
+        for check in self.channel_checks.values():
+            check.setEnabled(enabled)
+        self.stack_button.setEnabled(enabled)
+        self.close_button.setEnabled(enabled)
+
+    def normalized_source_text(self) -> str:
+        text = self.source_edit.text().strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            text = text[1:-1].strip()
+        if text.startswith("file://"):
+            parsed = urlparse(text)
+            text = unquote(parsed.path)
+        return text
+
+    def source_path_from_edit(self) -> Path | None:
+        text = self.normalized_source_text()
+        if not text:
+            return None
+        return Path(text).expanduser()
+
+    def sync_source_dir_from_edit(self) -> Path | None:
+        path = self.source_path_from_edit()
+        if path is None:
+            return None
+        self.source_dir = str(path)
+        self.source_edit.setText(self.source_dir)
+        return path
+
+    def dialog_start_directory(self) -> str:
+        current_path = self.sync_source_dir_from_edit()
+        if current_path is None:
+            current_path = Path(self.source_dir).expanduser()
+        if current_path.is_dir():
+            return str(current_path)
+        if current_path.parent.is_dir():
+            return str(current_path.parent)
+        return str(Path.home())
+
     def choose_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self,
             "Select Folder with Original Seestar FITS Frames",
-            self.source_dir,
+            self.dialog_start_directory(),
         )
         if selected:
             self.source_dir = selected
             self.source_edit.setText(selected)
+
+    def update_source_dir_from_edit(self) -> None:
+        self.sync_source_dir_from_edit()
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
@@ -1349,7 +1682,7 @@ class StackWindow(QWidget):
     def build_selected_channels(self) -> tuple[str, ...]:
         return tuple(
             channel_key
-            for channel_key in CFA_CHANNELS
+            for channel_key in self.channel_checks
             if self.channel_checks[channel_key].isChecked()
         )
 
@@ -1375,12 +1708,12 @@ class StackWindow(QWidget):
         if self.worker is not None and self.worker.isRunning():
             return
 
-        source_dir = self.source_edit.text().strip()
-        if not source_dir:
+        source_path = self.sync_source_dir_from_edit()
+        if source_path is None:
             QMessageBox.critical(self, "Missing Folder", "Select a source folder first.")
             return
+        source_dir = str(source_path)
 
-        source_path = Path(source_dir).expanduser()
         selected_plans = self.build_selected_plans()
         selected_channels = self.build_selected_channels()
 
@@ -1397,8 +1730,11 @@ class StackWindow(QWidget):
             needs_cfa_split = frames_need_cfa_split(source_frames)
             if needs_cfa_split and not selected_channels:
                 raise ValueError("Select at least one CFA output channel.")
+            if self.lightcurve_mode and not needs_cfa_split:
+                require_supported_lightcurve_source(source_frames, source_path)
         except Exception as exc:
-            QMessageBox.critical(self, "Cannot Start", str(exc))
+            self.append_log(f"Cannot start stacking: {exc}")
+            QMessageBox.critical(self, "Cannot Start", "Cannot start stacking.\n\nCheck the selected folder.")
             return
 
         allow_overwrite = DEFAULT_OVERWRITE_RESULTS
@@ -1409,15 +1745,10 @@ class StackWindow(QWidget):
             needs_cfa_split,
         )
         if existing_dirs:
-            shown_dirs = "\n".join(f"- {path.name}" for path in existing_dirs[:12])
-            if len(existing_dirs) > 12:
-                shown_dirs += f"\n- ... und {len(existing_dirs) - 12} weitere"
             reply = QMessageBox.question(
                 self,
                 "Overwrite Result Folders?",
-                "The following result folders already exist and will be cleared:\n\n"
-                f"{shown_dirs}\n\n"
-                "Continue?",
+                "Existing result folders will be overwritten.\n\nContinue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1425,16 +1756,39 @@ class StackWindow(QWidget):
                 return
             allow_overwrite = True
 
+        begin_busy_action = self.busy_context.get("begin_busy_action")
+        if callable(begin_busy_action):
+            if not begin_busy_action(
+                "STACK_RUNNING",
+                "Running CFA Channels / Stack.",
+                [self.stack_button],
+            ):
+                return
+
         self.log_view.clear()
-        self.stack_button.setEnabled(False)
-        self.worker = StackWorker(source_dir, selected_plans, selected_channels, allow_overwrite)
+        self.set_run_controls_enabled(False)
+        self.worker = StackWorker(
+            source_dir,
+            selected_plans,
+            selected_channels,
+            allow_overwrite,
+            require_lightcurve_filter=self.lightcurve_mode,
+        )
         self.worker.log.connect(self.append_log)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()
 
     def build_help_text(self) -> str:
+        lightcurve_note = ""
+        if self.lightcurve_mode:
+            lightcurve_note = (
+                "Light Curve mode:\n"
+                "- This window was opened from SeePhot.\n"
+                "- Only L or G outputs are used for V-calibrated Light Curves.\n\n"
+            )
         return (
             "This tool prepares and stacks original Seestar FITS frames for photometry.\n\n"
+            f"{lightcurve_note}"
             "Workflow:\n"
             "1. Select the folder containing the original Seestar .fit frames.\n"
             "2. Select stack groups by seconds, by frame count, or ALL.\n"
@@ -1476,7 +1830,7 @@ class StackWindow(QWidget):
 
     def show_help(self) -> None:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Seestar Stack Help")
+        dialog.setWindowTitle("SeePhot Stack Help")
         dialog.resize(760, 520)
 
         layout = QVBoxLayout(dialog)
@@ -1490,14 +1844,115 @@ class StackWindow(QWidget):
         layout.addWidget(buttons)
         dialog.exec()
 
-    def on_finished(self, success: bool, message: str) -> None:
-        self.stack_button.setEnabled(True)
+    def on_finished(self, success: bool, message: str, result_dir: str = "") -> None:
+        self.set_run_controls_enabled(True)
+        finish_busy_action = self.busy_context.get("finish_busy_action")
+        if callable(finish_busy_action):
+            finish_busy_action("STACK_RUNNING")
         self.append_log(message)
         if success:
-            QMessageBox.information(self, "Stack", message)
+            if result_dir:
+                self.stack_result_ready.emit(result_dir)
+            QMessageBox.information(self, "Stack", "Stack complete.")
         else:
-            QMessageBox.critical(self, "Error", message)
+            QMessageBox.critical(self, "Stack", "Stack failed.\n\nSee the log for details.")
         self.worker = None
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "Close",
+                "Stacking is still running.",
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
+def activate_existing_main_window(app: QApplication) -> bool:
+    """Bring an already open SeePhot Stack window to front if one exists."""
+
+    for widget in app.topLevelWidgets():
+        if widget.objectName() != MAIN_WINDOW_OBJECT_NAME:
+            continue
+        if not widget.isVisible():
+            continue
+        if widget.isMinimized():
+            widget.showNormal()
+        else:
+            widget.show()
+        widget.raise_()
+        widget.activateWindow()
+        return True
+    return False
+
+
+class SingleInstanceLock:
+    """Small cross-platform lock based on exclusive lock-file creation."""
+
+    def __init__(self, path: Path, fd: int) -> None:
+        self.path = path
+        self.fd = fd
+        self.locked = True
+
+    def unlock(self, *_args: object) -> None:
+        if not self.locked:
+            return
+        self.locked = False
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def acquire_single_instance_lock() -> SingleInstanceLock | None:
+    """Acquire the per-user SeePhot Stack instance lock, if available."""
+
+    def lock_is_stale() -> bool:
+        try:
+            stat = SINGLE_INSTANCE_LOCK_PATH.stat()
+        except FileNotFoundError:
+            return False
+        if time.time() - stat.st_mtime > SINGLE_INSTANCE_LOCK_MAX_AGE_SECONDS:
+            return True
+        try:
+            pid_text = SINGLE_INSTANCE_LOCK_PATH.read_text(encoding="ascii").strip()
+            pid = int(pid_text.splitlines()[0])
+        except (OSError, ValueError, IndexError):
+            return True
+        if pid <= 0:
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
+
+    for _attempt in range(2):
+        try:
+            fd = os.open(SINGLE_INSTANCE_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if not lock_is_stale():
+                return None
+            try:
+                SINGLE_INSTANCE_LOCK_PATH.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return None
+            continue
+        os.write(fd, f"{os.getpid()}\n{time.time():.3f}\n".encode("ascii"))
+        return SingleInstanceLock(SINGLE_INSTANCE_LOCK_PATH, fd)
+    return None
 
 
 def run_app() -> None:
@@ -1506,7 +1961,22 @@ def run_app() -> None:
     if app is None:
         app = QApplication(sys.argv)
 
+    configure_app_theme(app)
+    if activate_existing_main_window(app):
+        return
+    single_instance_lock = acquire_single_instance_lock()
+    if single_instance_lock is None:
+        activate_existing_main_window(app)
+        QMessageBox.information(
+            None,
+            "SeePhot Stack",
+            "SeePhot Stack is already running.",
+        )
+        return
+
     window = StackWindow()
+    window._single_instance_lock = single_instance_lock
+    window.destroyed.connect(single_instance_lock.unlock)
     window.show()
 
     if owns_app:

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 - 2026-07-14
+
+- Renamed the public script from `Seestar_stack.py` to `SeePhot_CFA.py`.
+- Added a dark standalone interface and single-instance protection.
+- Added editable and pasted source-path handling, including local `file://` URLs.
+- Improved Siril display-context cleanup and per-stack-block failure recovery.
+- Added FITS `SSAP` provenance and preservation of unambiguous channel metadata.
+- Added integration hooks for reuse by the companion SeePhot light-curve application.
+- Moved project links to GitHub and changed the license to GPL-3.0-or-later.
+
 ## 0.2.3 - 2026-05-19
 
 Initial commit.

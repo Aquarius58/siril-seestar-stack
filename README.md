@@ -14,6 +14,10 @@ Siril Python preprocessing script for original Seestar `.fit` frames. The script
 - Registers frames before stacking.
 - Creates stack groups by duration, by frame count, or `ALL`.
 - Writes photometry-oriented FITS timing metadata.
+- Records output provenance and preserves unambiguous channel metadata.
+- Accepts source folders selected through the dialog or pasted as local/file URLs.
+- Cleans up stale Siril display state before processing and continues after individual stack-block failures.
+- Provides a dark standalone interface with single-instance protection.
 - Confirms before clearing existing result folders.
 
 ## Limitations
@@ -32,7 +36,7 @@ The script is intended to run inside Siril's Python environment, not as a standa
 
 ## Usage
 
-1. Copy `Seestar_stack.py` into a Siril Python script directory.
+1. Copy `SeePhot_CFA.py` into a Siril Python script directory.
 2. Start Siril and run the script from the Scripts menu.
 3. Select the folder containing the original Seestar `.fit` frames.
 4. Select CFA photometry channels as needed: `L`, `R`, `G`, `B`.
@@ -101,4 +105,4 @@ https://github.com/Aquarius58/siril-seestar-stack/issues
 
 ## License
 
-GPL-3.0-or-later. See `LICENSE` and `Seestar_stack.py` for details.
+GPL-3.0-or-later. See `LICENSE` and `SeePhot_CFA.py` for details.
