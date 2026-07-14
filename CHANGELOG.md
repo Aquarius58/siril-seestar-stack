@@ -2,7 +2,7 @@
 
 ## 0.2.3 - 2026-05-19
 
-Initial merge preparation for `free-astro/siril-scripts`.
+Initial commit.
 
 - Added self-contained script header and documentation for upstream review.
 - Added photometry-oriented CFA channel extraction for `L`, `R`, `G`, and `B`.
