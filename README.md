@@ -97,8 +97,8 @@ For CFA/Bayer input, Siril is used to split measured CFA samples. The script doe
 
 Bug reports and support requests:
 
-https://gitlab.com/Aquarius58/siril-seestar-stack/-/issues
+https://github.com/Aquarius58/siril-seestar-stack/issues
 
 ## License
 
-MIT. See `Seestar_stack.py` for the SPDX licence identifier.
+GPL-3.0-or-later. See `LICENSE` and `Seestar_stack.py` for details.

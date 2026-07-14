@@ -2,10 +2,10 @@
 
 Version: 0.2.3
 Author: Thomas Rudolph (Aquarius58)
-Contact: https://gitlab.com/Aquarius58/siril-seestar-stack/-/issues
-Repository: https://gitlab.com/Aquarius58/siril-seestar-stack
+Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
+Repository: https://github.com/Aquarius58/siril-seestar-stack
 Copyright (c) 2026 Thomas Rudolph (Aquarius58)
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: GPL-3.0-or-later
 
 Overview
 --------
@@ -78,10 +78,10 @@ from __future__ import annotations
 # Seestar Photometry Stack
 # Version: 0.2.3
 # Author: Thomas Rudolph (Aquarius58)
-# Contact: https://gitlab.com/Aquarius58/siril-seestar-stack/-/issues
-# Repository: https://gitlab.com/Aquarius58/siril-seestar-stack
+# Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
+# Repository: https://github.com/Aquarius58/siril-seestar-stack
 # Copyright (c) 2026 Thomas Rudolph (Aquarius58)
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 import shutil
 import sys
