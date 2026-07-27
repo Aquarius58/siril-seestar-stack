@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 - 2026-07-27
+
+- Checked CFA/Bayer metadata across every input frame instead of relying on the
+  first frame alone.
+- Rejected mixed input folders containing original CFA frames and non-CFA or
+  already processed FITS files, with actionable diagnostics and `.bfit` backup
+  information.
+- Displayed the underlying validation error in the start-failure dialog.
+- Added Windows-native process detection for reliable stale single-instance
+  lock handling.
+- Made `SCRIPT_VERSION` the single authoritative version source.
+
 ## 0.3.0 - 2026-07-14
 
 - Renamed the public script from `Seestar_stack.py` to `SeePhot_CFA.py`.
