@@ -1,6 +1,5 @@
 """Seestar Photometry Stack
 
-Version: 0.3.0
 Author: Thomas Rudolph (Aquarius58)
 Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
 Repository: https://github.com/Aquarius58/siril-seestar-stack
@@ -76,7 +75,6 @@ frames.
 from __future__ import annotations
 
 # Seestar Photometry Stack
-# Version: 0.3.0
 # Author: Thomas Rudolph (Aquarius58)
 # Contact: https://github.com/Aquarius58/siril-seestar-stack/issues
 # Repository: https://github.com/Aquarius58/siril-seestar-stack
@@ -148,7 +146,7 @@ warnings.filterwarnings(
 )
 
 # User settings
-SCRIPT_VERSION = "0.3.0"
+SCRIPT_VERSION = "0.4.0"
 SIRIL_REQUIRES = "1.3.0"
 OUTPUT_BITS_COMMAND = "set16bits"
 SSAP_HEADER_VALUE = "SeePhot_CFA.py"
@@ -459,13 +457,50 @@ def image_has_bayer_header(path: Path) -> bool:
         return any(key in header for key in BAYER_HEADER_KEYS)
 
 
+def mixed_cfa_input_message(
+    cfa_frames: list[FitsFrame],
+    non_cfa_frames: list[FitsFrame],
+) -> str:
+    """Explain why original CFA and processed FITS cannot share one run."""
+
+    source_dir = cfa_frames[0].path.parent
+    backup_count = sum(
+        frame.path.with_suffix(".bfit").is_file()
+        for frame in non_cfa_frames
+    )
+    examples = ", ".join(frame.path.name for frame in non_cfa_frames[:3])
+    backup_note = (
+        f" {backup_count} corresponding original CFA backup(s) with the .bfit "
+        "extension are present but are not used automatically."
+        if backup_count
+        else ""
+    )
+    return (
+        f"Mixed input folder: {len(cfa_frames)} original CFA frame(s) and "
+        f"{len(non_cfa_frames)} non-CFA or already processed FITS frame(s) were "
+        f"found. CFA extraction cannot safely combine these files.{backup_note} "
+        "Keep only original CFA .fit/.fits frames in the selected folder, then "
+        f"start again. Example processed file(s): {examples}. "
+        f"Source folder: {source_dir}"
+    )
+
+
 def frames_need_cfa_split(frames: list[FitsFrame]) -> bool:
     if not SPLIT_CFA_TO_PHOTOMETRY_CHANNELS or not frames:
         return False
-    try:
-        return image_has_bayer_header(frames[0].path)
-    except Exception:
-        return False
+
+    cfa_frames: list[FitsFrame] = []
+    non_cfa_frames: list[FitsFrame] = []
+    for frame in frames:
+        try:
+            has_bayer_header = image_has_bayer_header(frame.path)
+        except Exception:
+            has_bayer_header = False
+        (cfa_frames if has_bayer_header else non_cfa_frames).append(frame)
+
+    if cfa_frames and non_cfa_frames:
+        raise ValueError(mixed_cfa_input_message(cfa_frames, non_cfa_frames))
+    return bool(cfa_frames)
 
 
 def normalize_image_source(value: object) -> str:
@@ -1734,7 +1769,11 @@ class StackWindow(QWidget):
                 require_supported_lightcurve_source(source_frames, source_path)
         except Exception as exc:
             self.append_log(f"Cannot start stacking: {exc}")
-            QMessageBox.critical(self, "Cannot Start", "Cannot start stacking.\n\nCheck the selected folder.")
+            QMessageBox.critical(
+                self,
+                "Cannot Start",
+                f"Cannot start stacking.\n\n{exc}",
+            )
             return
 
         allow_overwrite = DEFAULT_OVERWRITE_RESULTS
@@ -1912,6 +1951,45 @@ class SingleInstanceLock:
             pass
 
 
+def process_is_running(pid: int) -> bool:
+    """Return whether a PID exists without signalling it on Windows."""
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        )
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not handle:
+            # Access denied still proves that a process owns the PID.
+            return ctypes.get_last_error() == 5
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def acquire_single_instance_lock() -> SingleInstanceLock | None:
     """Acquire the per-user SeePhot Stack instance lock, if available."""
 
@@ -1929,13 +2007,7 @@ def acquire_single_instance_lock() -> SingleInstanceLock | None:
             return True
         if pid <= 0:
             return True
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False
-        return False
+        return not process_is_running(pid)
 
     for _attempt in range(2):
         try:
