@@ -1,5 +1,13 @@
 # Changelog
 
+## Code maintenance relocation
+
+- The current `SeePhot_CFA.py` is now provided only by
+  [SeePhot](https://github.com/Aquarius58/SeePhot/blob/main/SeePhot_CFA.py)
+  and updated with SeePhot Main releases. This repository retains its
+  documentation, screenshots, and support issues. Historical releases remain
+  unchanged.
+
 ## 0.4.0 - 2026-07-27
 
 - Checked CFA/Bayer metadata across every input frame instead of relying on the
